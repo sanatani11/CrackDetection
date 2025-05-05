@@ -59,17 +59,17 @@ def evaluate(net, dataloader, device, amp, dice_loss_fn=None):
             if net.n_classes == 1:
                 assert mask_true.min() >= 0 and mask_true.max() <= 1, 'True mask indices should be in [0, 1]'
                 bce_loss = criterion(mask_pred.squeeze(1), mask_true.float())
-                dice_loss = dice_loss_fn(F.sigmoid(mask_pred.squeeze(1)), mask_true.float(), multiclass=False)
-                val_loss += bce_loss.item() + dice_loss.item()
+                dice_los = dice_loss(F.sigmoid(mask_pred.squeeze(1)), mask_true.float(), multiclass=False)
+                val_loss += bce_loss.item() + dice_los.item()
                 mask_pred = (F.sigmoid(mask_pred) > 0.5).float()
                 dice_score += dice_coeff(mask_pred, mask_true, reduce_batch_first=False)
             else:
                 assert mask_true.min() >= 0 and mask_true.max() < net.n_classes, 'True mask indices should be in [0, n_classes['
                 bce_loss = criterion(mask_pred, mask_true)
-                dice_loss = dice_loss_fn(F.softmax(mask_pred, dim=1).float(),
+                dice_los = dice_loss(F.softmax(mask_pred, dim=1).float(),
                                          F.one_hot(mask_true, net.n_classes).permute(0, 3, 1, 2).float(),
                                          multiclass=True)
-                val_loss += bce_loss.item() + dice_loss.item()
+                val_loss += bce_loss.item() + dice_los.item()
                 mask_true = F.one_hot(mask_true, net.n_classes).permute(0, 3, 1, 2).float()
                 mask_pred = F.one_hot(mask_pred.argmax(dim=1), net.n_classes).permute(0, 3, 1, 2).float()
                 dice_score += multiclass_dice_coeff(mask_pred[:, 1:], mask_true[:, 1:], reduce_batch_first=False)

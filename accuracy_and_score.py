@@ -35,5 +35,6 @@ def calculate_accuracy_and_f1(model, data_loader, device):
     # Calculate accuracy and F1 score
     accuracy = accuracy_score(all_labels.flatten(), all_preds.flatten())
     f1 = f1_score(all_labels.flatten(), all_preds.flatten(), average='weighted')
+    model.train()
 
     return accuracy, f1

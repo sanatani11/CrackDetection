@@ -33,6 +33,7 @@ def train_model(
         batch_size: int = 1,
         learning_rate: float = 1e-5,
         val_percent: float = 0.1,
+        test_percent: float = 0.1,
         save_checkpoint: bool = True,
         img_scale: float = 0.5,
         amp: bool = False,
@@ -57,13 +58,18 @@ def train_model(
 
     
     n_val = int(len(dataset) * val_percent)
-    n_train = len(dataset) - n_val
-    train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+    n_test = int(len(dataset) * test_percent)
+    n_train = len(dataset) - n_val - n_test
+    # Split into train/val/test
+    train_set, temp_set = random_split(dataset, [n_train, n_val + n_test], generator=torch.Generator().manual_seed(0))
+    val_set, test_set = random_split(temp_set, [n_val, n_test], generator=torch.Generator().manual_seed(0))
+    
 
     
     loader_args = dict(batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
+    test_loader = DataLoader(test_set, shuffle=False, drop_last=True, **loader_args)
 
     
     optimizer = optim.RMSprop(model.parameters(),
@@ -77,6 +83,7 @@ def train_model(
     for epoch in range(1, epochs + 1):
         model.train()
         epoch_loss = 0
+        val_loss_after_epoch = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
             for batch in train_loader:
                 images, true_masks = batch['image'], batch['mask']
@@ -112,7 +119,8 @@ def train_model(
                 global_step += 1
                 epoch_loss += loss.item()
                 print(f"loss: {loss.item()}")
-                
+                avg_val_loss, val_score = evaluate(model, val_loader, device, amp)
+                val_loss_after_epoch += avg_val_loss
                 division_step = (n_train // (5 * batch_size))
                 if division_step > 0:
                     if global_step % division_step == 0:
@@ -120,15 +128,20 @@ def train_model(
                         for tag, value in model.named_parameters():
                             tag = tag.replace('/', '.')
 
-                        avg_val_loss, val_score = evaluate(model, val_loader, device, amp)
+                        
                         scheduler.step(val_score)
-
-        val_loss, dice_score = evaluate(model, val_loader, device, amp)
-        accuracy, f1 = calculate_accuracy_and_f1(model, val_loader, device)
         training_accuracy, training_f1score = calculate_accuracy_and_f1(model, train_loader, device)
+        model.eval()  # <-- Add this
+        with torch.no_grad():  # Also add this to disable gradients
+            val_loss, dice_score = evaluate(model, val_loader, device, amp)
+            accuracy, f1 = calculate_accuracy_and_f1(model, val_loader, device)
+        model.train()
+        
+        
+
 
         training_losses.append(epoch_loss)
-        validation_losses.append(val_loss)
+        validation_losses.append(val_loss_after_epoch)
         training_accuracies.append(training_accuracy)
         validation_accuracies.append(accuracy)
         training_f1_scores.append(training_f1score)
@@ -149,6 +162,18 @@ def train_model(
 
             print(f"Validation accuracy: {accuracy:.4f}, F1 score: {f1:.4f}")
 
+    model.eval()
+    test_loss, test_dice = evaluate(model, test_loader, device, amp)
+    test_accuracy, test_f1 = calculate_accuracy_and_f1(model, test_loader, device)
+
+    print('\nTest Results:')
+    print(f'Loss: {test_loss:.4f} | Accuracy: {test_accuracy:.2f}%')
+    print(f'F1 Score: {test_f1:.4f} | Dice Score: {test_dice:.4f}')
+
+    with open(metrics_file, mode='a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Final Test', None, test_loss, None, test_accuracy, None, test_f1, test_dice.item()])
+
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
@@ -160,6 +185,8 @@ def get_args():
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
     parser.add_argument('--validation', '-v', dest='val', type=float, default=10.0,
                         help='Percent of the data that is used as validation (0-100)')
+    parser.add_argument('--test', '-t', dest='test', type=float, default=10.0,
+                        help='Percent of the data that is used as test (0-100)')
     parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes')
@@ -192,5 +219,6 @@ if __name__ == '__main__':
         device=device,
         img_scale=args.scale,
         val_percent=args.val / 100,
+        test_percent=args.val / 100,
         amp=args.amp
     )
